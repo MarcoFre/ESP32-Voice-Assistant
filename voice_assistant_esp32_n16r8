@@ -1,0 +1,374 @@
+substitutions:
+  name: esp32-voice-assistant
+  friendly_name: "ESP32 Voice Assistant"
+  # --- I2S pins (edit to match your wiring) ---
+  i2s_bclk_pin: GPIO9
+  i2s_lrclk_pin: GPIO46
+  i2s_din_pin: GPIO8
+  i2s_dout_pin: GPIO3
+
+  # LED ring
+  led_pin: GPIO11
+  led_count: "16"
+
+  # Wake word model (change if needed)
+  wake_word_model: hey_jarvis
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+
+logger:
+  level: INFO
+
+api:
+
+ota:
+
+# ----------------------------
+# Wi-Fi (generic, GitHub-ready)
+# ----------------------------
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Optional: use a static IP if you want (keep commented for GitHub)
+  # manual_ip:
+  #   static_ip: 192.168.1.50
+  #   gateway: 192.168.1.1
+  #   subnet: 255.255.255.0
+
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: !secret wifi_ap_password
+
+captive_portal:
+
+time:
+  - platform: sntp
+    id: sntp_time
+
+# ----------------------------
+# I2S BUS
+# ----------------------------
+i2s_audio:
+  - id: i2s_in_out
+    i2s_bclk_pin: ${i2s_bclk_pin}
+    i2s_lrclk_pin: ${i2s_lrclk_pin}
+
+# ----------------------------
+# MICROPHONE (INMP441)
+# ----------------------------
+microphone:
+  - platform: i2s_audio
+    id: mic_in
+    i2s_audio_id: i2s_in_out
+    i2s_din_pin: ${i2s_din_pin}
+    adc_type: external
+    channel: left
+
+# ----------------------------
+# SPEAKER (MAX98357A)
+# ----------------------------
+speaker:
+  - platform: i2s_audio
+    id: spk_hw
+    i2s_audio_id: i2s_in_out
+    dac_type: external
+    i2s_dout_pin: ${i2s_dout_pin}
+    sample_rate: 44100
+    channel: stereo
+
+  # Mixer: separate sources for announcements vs media playback
+  - platform: mixer
+    id: spk_mixer
+    output_speaker: spk_hw
+    task_stack_in_psram: true
+    queue_mode: true
+    source_speakers:
+      - id: announcement_spk_mixer_input
+        buffer_duration: 2s
+      - id: media_spk_mixer_input
+
+# ----------------------------
+# MEDIA PLAYER
+# ----------------------------
+media_player:
+  - platform: speaker
+    id: speaker_media
+    name: "${friendly_name} Speaker"
+    volume_increment: 0.1
+
+    media_pipeline:
+      speaker: media_spk_mixer_input
+      num_channels: 1
+      format: MP3
+      sample_rate: 44100
+
+    announcement_pipeline:
+      speaker: announcement_spk_mixer_input
+      num_channels: 1
+      format: MP3
+      sample_rate: 44100
+
+    on_play:
+      - logger.log: "Media: PLAY"
+      - script.execute: led_speaking
+
+    on_idle:
+      - logger.log: "Media: IDLE"
+      - script.execute: led_listening
+
+# ----------------------------
+# WAKE WORD (micro_wake_word)
+# ----------------------------
+micro_wake_word:
+  id: mww
+  microphone:
+    microphone: mic_in
+    channels: 0
+    gain_factor: 4
+  models:
+    - model: ${wake_word_model}
+
+  on_wake_word_detected:
+    - logger.log:
+        level: INFO
+        format: "Wake word detected"
+    - micro_wake_word.stop:
+    - voice_assistant.start_continuous:
+    - switch.turn_on: chat_session
+    - script.execute: led_listening
+
+# ----------------------------
+# VOICE ASSISTANT (continuous mode)
+# ----------------------------
+voice_assistant:
+  id: va
+  microphone:
+    microphone: mic_in
+    channels: 0
+    gain_factor: 4
+  media_player: speaker_media
+  micro_wake_word: mww
+
+  noise_suppression_level: 1
+  auto_gain: 31dBFS
+  volume_multiplier: 4.0
+
+  on_client_connected:
+    - logger.log: "Voice Assistant: connected"
+
+  on_client_disconnected:
+    - logger.log: "Voice Assistant: disconnected"
+    - micro_wake_word.stop:
+    - voice_assistant.stop:
+    - script.execute: led_idle
+
+  on_intent_start:
+    - script.execute: led_thinking
+    - logger.log: "Voice Assistant: intent start"
+
+  on_tts_start:
+    - script.execute: led_speaking
+    - lambda: |-
+        id(last_output).publish_state(x.c_str());
+
+    # Exit phrase: "modalità silenziosa"
+    - if:
+        condition:
+          lambda: |-
+            std::string t = x;
+            for (auto &c : t) c = tolower((unsigned char)c);
+            return (t.find("modalità silenziosa") != std::string::npos);
+        then:
+          - delay: 5s
+          - switch.turn_off: chat_session
+          - voice_assistant.stop:
+          - script.execute: led_waiting_wake
+          - micro_wake_word.start:
+
+  on_start:
+    - script.execute: led_listening
+    - logger.log: "Voice Assistant: start"
+
+  on_end:
+    - logger.log: "Voice Assistant: end"
+    - switch.turn_off: chat_session
+    - script.execute: led_waiting_wake
+    - micro_wake_word.start:
+
+  on_error:
+    - logger.log:
+        level: ERROR
+        format: "Voice Assistant: error"
+    - script.execute: led_error
+
+  on_stt_end:
+    - lambda: |-
+        id(last_input).publish_state(x.c_str());
+
+# ----------------------------
+# SWITCHES (UI controls)
+# ----------------------------
+switch:
+  - platform: template
+    id: wake_word_enable
+    name: "Wake word"
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    icon: "mdi:microphone-message"
+    on_turn_on:
+      - script.execute: led_waiting_wake
+      - micro_wake_word.start:
+      - logger.log: "Wake word: START"
+    on_turn_off:
+      - script.execute: led_idle
+      - voice_assistant.stop:
+      - micro_wake_word.stop:
+      - logger.log: "Wake word: STOP"
+
+  - platform: template
+    id: chat_session
+    name: "Chat session"
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    icon: "mdi:chat"
+    on_turn_on:
+      - logger.log: "Chat session: ON"
+    on_turn_off:
+      - logger.log: "Chat session: OFF"
+
+# ----------------------------
+# TEXT SENSORS (debug-friendly)
+# ----------------------------
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "IP"
+      entity_category: diagnostic
+    bssid:
+      name: "BSSID"
+      entity_category: diagnostic
+
+  - platform: version
+    name: "ESPHome Version"
+    entity_category: diagnostic
+
+  - platform: template
+    id: last_input
+    name: "Last user text"
+
+  - platform: template
+    id: last_output
+    name: "Last assistant text"
+
+# ----------------------------
+# LED RING (WS2812) + effects
+# ----------------------------
+globals:
+  - id: fg_r
+    type: int
+    initial_value: "0"
+  - id: fg_g
+    type: int
+    initial_value: "0"
+  - id: fg_b
+    type: int
+    initial_value: "0"
+  - id: bg_r
+    type: int
+    initial_value: "0"
+  - id: bg_g
+    type: int
+    initial_value: "0"
+  - id: bg_b
+    type: int
+    initial_value: "0"
+
+light:
+  - platform: esp32_rmt_led_strip
+    chipset: WS2812
+    rgb_order: GRB
+    id: led_ring
+    name: "LED Ring"
+    pin: ${led_pin}
+    num_leds: ${led_count}
+    restore_mode: ALWAYS_OFF
+    effects:
+      - addressable_lambda:
+          name: "VA Rotate"
+          update_interval: 70ms
+          lambda: |-
+            static int pos = 0;
+            const int N = it.size();
+            for (int i = 0; i < N; i++) it[i] = Color(id(bg_r), id(bg_g), id(bg_b));
+            it[pos % N] = Color(id(fg_r), id(fg_g), id(fg_b));
+            pos = (pos + 1) % N;
+
+      - addressable_lambda:
+          name: "VA Standby"
+          update_interval: 40ms
+          lambda: |-
+            const int N = it.size();
+            const uint32_t now = millis();
+            for (int i = 0; i < N; i++) it[i] = Color(0,0,0);
+            int pos1 = (now / 90) % N;
+            int pos2 = (pos1 + 3) % N;
+            it[pos1] = Color(255, 120, 0);
+            it[pos2] = Color(120, 60, 0);
+
+script:
+  - id: led_idle
+    then:
+      - light.turn_off: led_ring
+
+  - id: led_waiting_wake
+    then:
+      - light.turn_on:
+          id: led_ring
+          effect: "VA Standby"
+      - lambda: |-
+          id(fg_r)=255; id(fg_g)=120; id(fg_b)=0;
+          id(bg_r)=0;   id(bg_g)=0;   id(bg_b)=0;
+
+  - id: led_listening
+    then:
+      - light.turn_on:
+          id: led_ring
+          effect: "VA Rotate"
+      - lambda: |-
+          id(fg_r)=0;   id(fg_g)=200; id(fg_b)=0;   // green dot
+          id(bg_r)=0;   id(bg_g)=0;   id(bg_b)=60;  // blue bg
+
+  - id: led_thinking
+    then:
+      - light.turn_on:
+          id: led_ring
+          effect: "VA Rotate"
+      - lambda: |-
+          id(fg_r)=200; id(fg_g)=0;   id(fg_b)=0;   // red dot
+          id(bg_r)=0;   id(bg_g)=0;   id(bg_b)=60;  // blue bg
+
+  - id: led_speaking
+    then:
+      - light.turn_on:
+          id: led_ring
+          effect: "VA Rotate"
+      - lambda: |-
+          id(fg_r)=255; id(fg_g)=200; id(fg_b)=0;   // yellow dot
+          id(bg_r)=120; id(bg_g)=0;   id(bg_b)=0;   // red bg
+
+  - id: led_error
+    then:
+      - light.turn_on:
+          id: led_ring
+          effect: "VA Rotate"
+      - lambda: |-
+          id(fg_r)=255; id(fg_g)=0;   id(fg_b)=0;
+          id(bg_r)=10;  id(bg_g)=0;   id(bg_b)=0;
