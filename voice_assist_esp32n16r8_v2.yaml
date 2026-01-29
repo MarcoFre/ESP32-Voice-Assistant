@@ -3,7 +3,8 @@
 #  - Wake word + Continuous + Stop Word on-demand
 #  - State machine + Boot/WiFi UX + LED ring states
 #  - All tunables in substitutions
-#  - Inspired by AshayRey code
+#  - Inspired by AshayRey code 
+#    (https://github.com/AshaiRey/ESP-Assistant/blob/main/ESP%20Assistant%20v4.yaml)
 # ==================== Hack My Home =======================
 
 substitutions:
