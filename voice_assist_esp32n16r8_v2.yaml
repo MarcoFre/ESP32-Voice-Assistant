@@ -3,7 +3,8 @@
 #  - Wake word + Continuous + Stop Word on-demand
 #  - State machine + Boot/WiFi UX + LED ring states
 #  - All tunables in substitutions
-# =========================================================
+#  - Inspired by AshayRey code
+# ==================== Hack My Home =======================
 
 substitutions:
   # -------- Identity --------
@@ -15,10 +16,10 @@ substitutions:
   wifi_output_power: "8.5dB"
 
   # -------- I2S pins --------
-  i2s_bclk_pin: "GPIO9"
-  i2s_lrclk_pin: "GPIO46"
-  i2s_din_pin:  "GPIO8"
-  i2s_dout_pin: "GPIO3"
+  i2s_bclk_pin:  "GPIO9"
+  i2s_lrclk_pin: "GPIO10"
+  i2s_din_pin:   "GPIO8"
+  i2s_dout_pin:  "GPIO3"
 
   # -------- Audio tuning --------
   sample_rate_hz: "44100"
@@ -108,16 +109,23 @@ substitutions:
 esphome:
   name: ${hostname}
   friendly_name: ${friendly}
+  project:
+    name: HackMyHome.VoiceAssist
+    version: '2.1.0'
   on_boot:
     priority: 600
     then:
       - lambda: |-
           id(init_in_progress) = true;
-          id(booting) = true;
           id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};
-      - script.execute: led_waiting_wake
+      - light.turn_on:
+          id: led_ring
+          blue: 0%
+          red: 0%
+          green: 100%
+          brightness: 50%
+          effect: "scanning"
       - delay: ${boot_anim_s}
-      - lambda: id(booting) = false;
       # Fail-safe: if HA never connects, stop boot phase anyway
       - delay: ${init_fail_safe_s}
       - lambda: id(init_in_progress) = false;
@@ -126,12 +134,38 @@ esp32:
   board: esp32-s3-devkitc-1
   framework:
     type: esp-idf
+    version: recommended
+    sdkconfig_options:
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB: "y"
+      CONFIG_SPIRAM_RODATA: "y"
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+      CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST: "y"
+      CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY: "y"
+      CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
+      CONFIG_MBEDTLS_SSL_PROTO_TLS1_3: "y" 
 
+psram:
+  mode: octal
+  speed: 80MHz
+  
 logger:
-  level: INFO
+  level: DEBUG
 
 api:
+#  encryption:
+#    key: !secret api_key 
+  actions:
+    - action: start_va
+      then:
+        - voice_assistant.start
+    - action: stop_va
+      then:
+        - voice_assistant.stop
+
 ota:
+  - platform: esphome
 
 wifi:
   ssid: !secret wifi_ssid
@@ -140,18 +174,24 @@ wifi:
   ap:
     ssid: "${friendly} Fallback"
     password: !secret wifi_ap_password
-
+  on_connect:
+    - light.turn_off:
+        id: led_ring      
+  on_disconnect:
+    - light.turn_on:
+        id: led_ring
+        blue: 0%
+        red: 50%
+        green: 0%
+        brightness: 98%
+        effect: "Fast Pulse"
+        
 captive_portal:
 
 # -----------------------------
 # GLOBALS / FLAGS (point C)
 # -----------------------------
 globals:
-  - id: booting
-    type: bool
-    restore_value: no
-    initial_value: 'true'
-
   - id: init_in_progress
     type: bool
     restore_value: no
@@ -225,6 +265,7 @@ speaker:
     i2s_dout_pin: ${i2s_dout_pin}
     sample_rate: ${sample_rate_hz}
     channel: stereo
+    buffer_duration: 90ms
 
   - platform: mixer
     id: spk_mixer
@@ -233,7 +274,6 @@ speaker:
     queue_mode: true
     source_speakers:
       - id: announcement_spk_mixer_input
-        buffer_duration: 2s
       - id: media_spk_mixer_input
 
   # Resampler (stabilità & compatibilità)
@@ -274,15 +314,25 @@ media_player:
     on_play:
       - if:
           condition:
-            lambda: 'return !id(booting);'
+            lambda: 'return id(voice_assistant_phase) == 1;'
           then:
             - logger.log: "Media: PLAY"
+            - light.turn_on:
+                id: led_ring
+                blue: 50%
+                red: 0%
+                green: 0%
+                brightness: 75%
+                effect: "Slow Pulse"          
+          else:
+            - logger.log: "Media: SPEAKING"
             - script.execute: led_speaking
 
     on_idle:
       - if:
           condition:
-            lambda: 'return !id(booting);'
+            lambda: 'return id(voice_assistant_phase) == 1;'
+            - light.turn_off: led_ring
           then:
             - logger.log: "Media: IDLE"
             - script.execute: led_listening
@@ -546,14 +596,14 @@ select:
   - platform: template
     name: "Wake word sensitivity"
     optimistic: true
-    initial_option: "Slightly sensitive"
+    initial_option: "Sensibilità normale"
     restore_value: true
     entity_category: config
     options:
-      - "Slightly sensitive"
-      - "Slightly+ sensitive"
-      - "Moderately sensitive"
-      - "Very sensitive"
+      - "Sensibilità minima"
+      - "Sensibilità bassa"
+      - "Sensibilità normale"
+      - "Sensibilità alta"
     on_value:
       lambda: |-
         if (x == "Slightly sensitive") {
@@ -661,6 +711,17 @@ light:
     restore_mode: ALWAYS_OFF
     default_transition_length: 0s
     effects:
+      - addressable_scan:
+          name: "Scanning"
+          move_interval: 150ms
+          scan_width: 2
+      - pulse:
+          name: "Slow Pulse"
+          transition_length: 770ms
+          update_interval: 770ms
+          min_brightness: 10%
+          max_brightness: 20%
+
       - addressable_lambda:
           name: "VA Rotate"
           update_interval: ${led_rotate_ms}
@@ -670,7 +731,6 @@ light:
             for (int i = 0; i < N; i++) it[i] = Color(id(bg_r), id(bg_g), id(bg_b));
             it[pos % N] = Color(id(fg_r), id(fg_g), id(fg_b));
             pos = (pos + 1) % N;
-
       - addressable_lambda:
           name: "VA Standby"
           update_interval: ${led_standby_ms}
