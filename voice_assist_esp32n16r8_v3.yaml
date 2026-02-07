@@ -420,7 +420,7 @@ voice_assistant:
     - logger.log:
         level: INFO
         format: "==== VoiceAssistant - Question: %s"
-        args: ['id(question)']
+        args: ['id(question).c_str()']
     - text_sensor.template.publish:
         id: text_request
         state: !lambda return x;
@@ -436,7 +436,7 @@ voice_assistant:
     - logger.log:
         level: INFO
         format: "==== VoiceAssistant - Answer %s"
-        args: ['id(answer)']
+        args: ['id(answer).c_str()']
     - text_sensor.template.publish:
         id: text_response
         state: !lambda return x;
