@@ -174,7 +174,6 @@ esphome:
   on_boot:
     priority: 600
     then:
-      - delay: ${boot_sound_delay}
       - logger.log:
           level: INFO
           format: "=== BOOT START"
@@ -185,7 +184,7 @@ esphome:
       - logger.log:
           level: INFO
           format: "=== BOOT - Tone done"
-      - delay: 1s
+      - delay: ${boot_sound_delay}
       - if:
           condition:
             not:
