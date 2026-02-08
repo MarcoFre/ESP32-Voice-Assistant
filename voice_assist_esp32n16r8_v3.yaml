@@ -8,7 +8,6 @@ substitutions:
   # -------- Identity --------
   hostname: "voice-assist-elsa"
   friendly: "HA Voice Assist Elsa"
-  ActivateChat: "Chat Attiva"
 
   # -------- Boot --------
   # Home Assistant boot config
@@ -97,7 +96,11 @@ globals:
   - id: init_in_progress
     type: bool
     restore_value: false
-    initial_value: "true"
+    initial_value: "false"
+  - id: boot_sound
+    type: bool
+    restore_value: false
+    initial_value: "false"
   - id: voice_assistant_phase
     type: int
     restore_value: false
@@ -177,24 +180,20 @@ esphome:
       - logger.log:
           level: INFO
           format: "=== BOOT START"
+      - lambda: id(init_in_progress) = true;
       - media_player.play_media:
           id: speaker_media_player
           media_url: "${ha_base_url}${boot_sound_path}"
-          announcement: false
+          announcement: True
+      - lambda: id(boot_sound) = true;
+      - delay: ${boot_sound_delay}
+      - wait_until:
+          condition:
+            media_player.is_announcing
+          timeout: 1s
       - logger.log:
           level: INFO
           format: "=== BOOT - Tone done"
-      - delay: ${boot_sound_delay}
-      - if:
-          condition:
-            not:
-              - micro_wake_word.is_running:
-          then:
-            - micro_wake_word.start:
-            - delay: 200ms
-            - logger.log:
-                level: INFO
-                format: "==== BOOT - WakeWord: Start"
       - logger.log:
           level: INFO
           format: "=== BOOT END"
@@ -265,7 +264,41 @@ wifi:
 api:
   encryption:
     key: "your_api_key"
-
+    then:
+      - logger.log:
+          level: INFO
+          format: "=== API CONNECTED"
+      - if:
+          condition:
+            not:
+              lambda: return id(boot_sound);
+          then:
+            - logger.log:
+                level: INFO
+                format: "=== API CONNECTED - Boot sound"
+            - micro_wake_word.stop
+            - voice_assistant.stop
+            - media_player.play_media:
+                id: speaker_media_player
+                media_url: "${ha_base_url}${boot_sound_path}"
+                announcement: True
+            - lambda: id(boot_sound) = true;
+            - delay: ${boot_sound_delay}
+            - logger.log:
+                level: INFO
+                format: "=== API CONNECTED - Tone done"
+      - if:
+          condition:
+            not:
+              - micro_wake_word.is_running:
+          then:
+            - micro_wake_word.start:
+            - delay: 200ms
+            - logger.log:
+                level: INFO
+                format: "==== API CONNECTED - WakeWord: Start"
+      - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+      - script.execute: control_leds      
 ota:
   - platform: esphome
     password: "your_ota_password"
@@ -423,6 +456,25 @@ voice_assistant:
     - text_sensor.template.publish:
         id: text_request
         state: !lambda return x;
+
+    - if:
+        condition:
+          lambda: |-
+            std::string t = id(question).c_str();
+            for (auto &c : t) c = tolower((unsigned char)c);
+            return (t.find("silenziosa") != std::string::npos);
+        then:
+          - delay: 500ms
+          - voice_assistant.stop
+          - logger.log:
+              level: INFO
+              format: "==== Modalita Silenziosa: Voice Assistant: Stop"
+          - micro_wake_word.start:
+          - delay: 200ms
+          - logger.log:
+              level: INFO
+              format: "==== Modalita Silenziosa: WakeWord: Start"
+          - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
     - script.execute: control_leds
   on_tts_start:
     - lambda: |-
@@ -1202,3 +1254,5 @@ light:
                 atoi("${err_bg_b}")
               );
             }
+
+    
