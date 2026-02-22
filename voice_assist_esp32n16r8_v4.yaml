@@ -39,7 +39,7 @@ substitutions:
   pin_t2: "GPIO5"
   pin_t3: "GPIO6"
   pin_t4: "GPIO7"
-  pin_t5: "GPIO8"
+  pin_t5: "GPIO13"
   tasto1: "05 -"
   tasto2: "03 LED"
   tasto3: "04 +"
